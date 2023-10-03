@@ -1,0 +1,232 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract MessagingApp {
+    struct Message {
+        address sender;
+        address receiver;
+        string content;
+        uint256 timestamp;
+    }
+
+    struct FriendRequest {
+        address sender;
+        uint256 number;
+    }
+
+    mapping(address => mapping(address => Message[])) private messages;
+    mapping(address => mapping(address => bool)) private friendRequests;
+    mapping(address => mapping(uint256 => bool)) private friendRequestsNumbers;
+    mapping(address => mapping(uint256 => FriendRequest)) private pendingFriendRequests;
+    mapping(address => mapping(address => bool)) private friends;
+    mapping(address => address[]) private friendsList;
+    mapping(address => mapping(address => bool)) private acceptedFriends;
+    mapping(address => uint256) private pendingFriendRequestsCount;
+    mapping(address => mapping(address => bool)) private blockedAddresses;
+    mapping(address => address[]) private sentFriendRequestsList;
+
+    event MessageSent(address indexed sender, address indexed receiver, string content, uint256 timestamp);
+    event FriendRequestSent(address indexed sender, address indexed receiver, uint256 number);
+    event FriendRequestAccepted(address indexed sender, address indexed receiver, uint256 number);
+    event AddressBlocked(address indexed blocker, address indexed blockedAddress);
+    event FriendRemoved(address indexed remover, address indexed removedFriend);
+
+    function sendFriendRequest(address _receiver) external {
+        require(_receiver != msg.sender, "Cannot send a friend request to yourself");
+        require(!friendRequests[_receiver][msg.sender], "Friend request already sent");
+
+        uint256 friendRequestNumber = 1;
+        while (friendRequestsNumbers[_receiver][friendRequestNumber]) {
+            friendRequestNumber++;
+        }
+
+        friendRequests[_receiver][msg.sender] = true;
+        friendRequestsNumbers[_receiver][friendRequestNumber] = true;
+        pendingFriendRequests[_receiver][friendRequestNumber] = FriendRequest({
+            sender: msg.sender,
+            number: friendRequestNumber
+        });
+
+        sentFriendRequestsList[_receiver].push(msg.sender);
+
+        emit FriendRequestSent(msg.sender, _receiver, friendRequestNumber);
+
+        pendingFriendRequestsCount[_receiver]++;
+    }
+
+    function acceptFriendRequest(uint256 _friendRequestNumber) external {
+        require(friendRequestsNumbers[msg.sender][_friendRequestNumber], "Friend request does not exist");
+        address _sender = pendingFriendRequests[msg.sender][_friendRequestNumber].sender;
+
+        delete friendRequests[msg.sender][_sender];
+        delete friendRequestsNumbers[msg.sender][_friendRequestNumber];
+        delete pendingFriendRequests[msg.sender][_friendRequestNumber];
+
+        friends[msg.sender][_sender] = true;
+        friends[_sender][msg.sender] = true;
+
+        friendsList[msg.sender].push(_sender);
+        friendsList[_sender].push(msg.sender);
+
+        acceptedFriends[msg.sender][_sender] = true;
+        acceptedFriends[_sender][msg.sender] = true;
+
+        emit FriendRequestAccepted(_sender, msg.sender, _friendRequestNumber);
+
+        pendingFriendRequestsCount[msg.sender]--;
+    }
+
+    modifier onlyFriends(address _receiver) {
+        require(friends[msg.sender][_receiver], "You can only send messages to friends");
+        _;
+    }
+
+    function sendMessage(address _receiver, string memory _content) external onlyFriends(_receiver) {
+        require(_receiver != msg.sender, "Cannot send a message to yourself");
+        require(!blockedAddresses[msg.sender][_receiver], "You are blocked by the receiver");
+        require(!blockedAddresses[_receiver][msg.sender], "You have blocked the receiver");
+
+        messages[msg.sender][_receiver].push(Message({
+            sender: msg.sender,
+            receiver: _receiver,
+            content: _content,
+            timestamp: block.timestamp
+        }));
+
+        messages[_receiver][msg.sender].push(Message({
+            sender: msg.sender,
+            receiver: _receiver,
+            content: _content,
+            timestamp: block.timestamp
+        }));
+
+        emit MessageSent(msg.sender, _receiver, _content, block.timestamp);
+    }
+
+    function getMessagesCount(address _friend) external view returns (uint256) {
+        return messages[msg.sender][_friend].length;
+    }
+
+    function getMessageDetails(address _friend, uint256 _messageIndex) external view returns (
+        address sender,
+        address receiver,
+        string memory content,
+        uint256 timestamp
+    ) {
+        Message memory message = messages[msg.sender][_friend][_messageIndex];
+        return (message.sender, message.receiver, message.content, message.timestamp);
+    }
+
+    function getFriendsList() external view returns (address[] memory) {
+        address[] memory acceptedFriendsList;
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < friendsList[msg.sender].length; i++) {
+            address friend = friendsList[msg.sender][i];
+            if (acceptedFriends[msg.sender][friend]) {
+                count++;
+            }
+        }
+
+        acceptedFriendsList = new address[](count);
+
+        count = 0;
+        for (uint256 i = 0; i < friendsList[msg.sender].length; i++) {
+            address friend = friendsList[msg.sender][i];
+            if (acceptedFriends[msg.sender][friend]) {
+                acceptedFriendsList[count] = friend;
+                count++;
+            }
+        }
+
+        return acceptedFriendsList;
+    }
+
+    function getPendingFriendRequestsCount() external view returns (uint256) {
+        return pendingFriendRequestsCount[msg.sender];
+    }
+
+    function getPendingFriendRequestDetails(uint256 _friendRequestIndex) external view returns (
+        address sender,
+        uint256 number
+    ) {
+        uint256 count = 0;
+        for (uint256 i = 1; i <= friendsList[msg.sender].length; i++) {
+            if (friendRequestsNumbers[msg.sender][i]) {
+                if (count == _friendRequestIndex) {
+                    return (pendingFriendRequests[msg.sender][i].sender, i);
+                }
+                count++;
+            }
+        }
+        revert("Invalid friend request index");
+    }
+
+    function blockAddress(address _addressToBlock) external {
+        require(friends[msg.sender][_addressToBlock], "You can only block friends");
+        blockedAddresses[msg.sender][_addressToBlock] = true;
+        blockedAddresses[_addressToBlock][msg.sender] = true;
+        emit AddressBlocked(msg.sender, _addressToBlock);
+    }
+
+    function unblockAddress(address _addressToUnblock) external {
+        require(blockedAddresses[msg.sender][_addressToUnblock], "Address is not blocked");
+        blockedAddresses[msg.sender][_addressToUnblock] = false;
+        blockedAddresses[_addressToUnblock][msg.sender] = false;
+    }
+
+    function removeFriend(address _friendToRemove) external {
+        require(acceptedFriends[msg.sender][_friendToRemove], "Address is not an accepted friend");
+
+        for (uint256 i = 0; i < friendsList[msg.sender].length; i++) {
+            if (friendsList[msg.sender][i] == _friendToRemove) {
+                friendsList[msg.sender][i] = friendsList[msg.sender][friendsList[msg.sender].length - 1];
+                friendsList[msg.sender].pop();
+                break;
+            }
+        }
+
+        for (uint256 i = 0; i < friendsList[_friendToRemove].length; i++) {
+            if (friendsList[_friendToRemove][i] == msg.sender) {
+                friendsList[_friendToRemove][i] = friendsList[_friendToRemove][friendsList[_friendToRemove].length - 1];
+                friendsList[_friendToRemove].pop();
+                break;
+            }
+        }
+
+        delete acceptedFriends[msg.sender][_friendToRemove];
+        delete acceptedFriends[_friendToRemove][msg.sender];
+
+        emit FriendRemoved(msg.sender, _friendToRemove);
+    }
+
+    function getBlockedAddresses(address _user) external view returns (address[] memory) {
+        uint256 blockedAddressesCount = 0;
+
+        for (uint256 i = 0; i < friendsList[_user].length; i++) {
+            if (blockedAddresses[msg.sender][friendsList[_user][i]]) {
+                blockedAddressesCount++;
+            }
+        }
+
+        address[] memory blockedAddressesList = new address[](blockedAddressesCount);
+
+        uint256 index = 0;
+        for (uint256 i = 0; i < friendsList[_user].length; i++) {
+            if (blockedAddresses[msg.sender][friendsList[_user][i]]) {
+                blockedAddressesList[index] = friendsList[_user][i];
+                index++;
+            }
+        }
+
+        return blockedAddressesList;
+    }
+
+    function getSentFriendRequestsList(address _user) external view returns (address[] memory) {
+        return sentFriendRequestsList[_user];
+    }
+
+    function getReceivedFriendRequestsList() external view returns (address[] memory) {
+        return sentFriendRequestsList[msg.sender];
+    }
+}
